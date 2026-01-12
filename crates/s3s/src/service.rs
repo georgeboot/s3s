@@ -7,6 +7,8 @@ use crate::s3_trait::S3;
 use crate::validation::NameValidation;
 use crate::{HttpError, HttpRequest, HttpResponse};
 
+#[cfg(feature = "axum")]
+use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 
@@ -173,7 +175,9 @@ impl tower::Service<http::Request<hyper::body::Incoming>> for S3Service {
 #[cfg(feature = "axum")]
 impl tower::Service<axum::extract::Request<axum::body::Body>> for S3Service {
     type Response = HttpResponse;
-    type Error = HttpError;
+
+    type Error = Infallible;
+
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
@@ -183,7 +187,19 @@ impl tower::Service<axum::extract::Request<axum::body::Body>> for S3Service {
     fn call(&mut self, req: axum::extract::Request<axum::body::Body>) -> Self::Future {
         let req = req.map(Body::http_body_unsync);
         let service = self.clone();
-        Box::pin(service.call_owned(req))
+        Box::pin(async move {
+            match service.call_owned(req).await {
+                Ok(resp) => Ok(resp),
+                Err(err) => {
+                    // Turn an S3Service error into a generic HTTP 500 response.
+                    let resp = HttpResponse::builder()
+                        .status(crate::http::StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from(format!("internal error: {err:?}")))
+                        .unwrap();
+                    Ok(resp)
+                }
+            }
+        })
     }
 }
 
