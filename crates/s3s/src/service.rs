@@ -170,6 +170,23 @@ impl tower::Service<http::Request<hyper::body::Incoming>> for S3Service {
     }
 }
 
+#[cfg(feature = "axum")]
+impl tower::Service<axum::extract::Request<axum::body::Body>> for S3Service {
+    type Response = HttpResponse;
+    type Error = HttpError;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: axum::extract::Request<axum::body::Body>) -> Self::Future {
+        let req = req.map(Body::http_body_unsync);
+        let service = self.clone();
+        Box::pin(service.call_owned(req))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
