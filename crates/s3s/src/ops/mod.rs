@@ -52,7 +52,7 @@ use hyper::Method;
 use hyper::StatusCode;
 use hyper::Uri;
 use mime::Mime;
-use tracing::{debug, error};
+use tracing::{Instrument, debug, error, info_span};
 
 #[async_trait::async_trait]
 pub trait Operation: Send + Sync + 'static {
@@ -239,15 +239,26 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
 
     match prep {
         Prepare::S3(op) => {
-            match op.call(ccx, req).await {
-                Ok(resp) => {
-                    Ok(resp) //
-                }
-                Err(err) => {
-                    error!(op = %op.name(), ?err, "op returns error");
-                    serialize_error(err, false)
+            // Wrap the operation dispatch in a span named after the resolved
+            // operation (GetObject, PutObject, …). The name is known here, after
+            // route resolution, so it can be set at span creation — exporters
+            // that key on span name (e.g. OpenTelemetry/Axiom) then group by
+            // operation. `otel.name`/`otel.kind` are the special fields the
+            // tracing-opentelemetry bridge reads.
+            let span = info_span!("s3.operation", otel.name = op.name(), otel.kind = "server");
+            async {
+                match op.call(ccx, req).await {
+                    Ok(resp) => {
+                        Ok(resp) //
+                    }
+                    Err(err) => {
+                        error!(op = %op.name(), ?err, "op returns error");
+                        serialize_error(err, false)
+                    }
                 }
             }
+            .instrument(span)
+            .await
         }
         Prepare::CustomRoute => {
             let body = mem::take(&mut req.body);
